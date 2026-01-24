@@ -33,19 +33,27 @@ def run_agent(task:str):
         {"role":"user","content":task}
     ]
     # 第一次：让 LLM 决定是否调用工具
+    print("[Agent] 调用 LLM 决策是否使用工具")
     reply=call_llm(messages)
     print("[LLM 第一次回复]")
     print(reply)
+    if reply.startswith("[LLM_ERROR]"):
+       return reply
     try:
         # 尝试将 LLM 的回复解析为 JSON
         # 如果能解析，说明 LLM 可能在请求调用工具
         tool_call=json.loads(reply)
+    except json.JSONDecodeError:
+         print("[Agent] 未触发工具，直接返回模型结果")
+         return reply
         # 判断是否是天气查询工具
-        if tool_call["tool"]=="get_weather":
+    if tool_call["tool"]=="get_weather":
             # 从工具参数中取出城市信息
            city=tool_call["args"]["city"]
+           print(f"[Agent] 调用工具 get_weather，city={city}")
            # 调用真实工具（非 LLM）
            result=get_weather(city)
+           print("[Agent] 工具返回结果：", result)
            # 把 LLM 的“工具调用请求”加入上下文
            messages.append({"role":"assistant","content":reply})
             # 把工具执行结果返回给 LLM
@@ -56,14 +64,14 @@ def run_agent(task:str):
            })
            # 第二次调用 LLM
             # 目的：生成最终自然语言回复
-           final_ansewer=call_llm(messages)
-           return final_ansewer
-    except Exception:
-       # 如果：
-        # - JSON 解析失败
-        # - 或 LLM 没有请求工具
-        # 则直接返回第一次 LLM 回复
-        return reply
+           final_answer=call_llm(messages)
+           if final_answer.startswith("[LLM_ERROR]"):
+               return final_answer
+           print("[Agent] 最终输出")
+           return final_answer
+
+    # 4️⃣ 未识别的工具
+    return "[Agent_ERROR] 未识别的工具调用"
     
 # #用户任务
 #    ↓

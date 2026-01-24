@@ -18,10 +18,14 @@ def call_llm(messages):
     # :return: LLM 生成的文本内容（字符串）
     # """
      # 向 LLM 发送对话请求
-    response=client.chat.completions.create(
+    try:
+        response=client.chat.completions.create(
         model="qwen-turbo", # 使用通义千问 qwen-turbo 模型
         messages=messages, # 对话上下文
-        temperature=0 # 温度为 0，输出更稳定、确定性更强（适合 Agent / Tool）
+        temperature=0, # 温度为 0，输出更稳定、确定性更强（适合 Agent / Tool）
+        timeout=15
     )
     # 返回模型生成的最终文本内容
-    return response.choices[0].message.content
+        return response.choices[0].message.content
+    except Exception as e:
+        return f"[LLM_ERROR] {type(e).__name__}: {str(e)}"
