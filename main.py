@@ -1,4 +1,5 @@
-if __name__=="__main__":
+from config import Config
+if __name__ == "__main__":
     task=input("请输入任务:")
     if "天气" in task:
         from agent import run_agent
