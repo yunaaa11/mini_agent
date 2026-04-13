@@ -1,13 +1,20 @@
 from typing import List, Optional
 CITIES=["北京","上海","广州"]
 def extract_city(task:str)->str|None:
-    #返回策略：
-    #只返回第一个出现的城市
-    #如果没有城市，返回 None
+    #返回策略：只返回第一个出现的城市 如果没有城市，返回 None
     for city in CITIES:
         if city in task:
             return city
     return None
+if __name__ == "__main__":
+    test_tasks = [
+        "北京今天天气怎么样",
+        "上海和广州哪个更暖和",
+        "查询深圳天气"
+    ]
+    for task in test_tasks:
+        city = extract_city(task)
+        print(f"任务: {task} → 提取城市: {city}")
 #list 保留顺序，set 不保证顺序，而我们要的是：“用户输入里先出现的城市，优先级更高”
 def extract_cities(task:str)->List[str]:
     #返回所有命中的城市（按出现顺序去重）

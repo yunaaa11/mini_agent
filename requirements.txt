@@ -1,5 +1,16 @@
-flask
+python-dotenv
 openai
+flask
 sentence-transformers
-torch
-numpy
+langchain>=0.3.0
+langchain-openai>=0.2.0
+langgraph>=0.2.0
+langgraph-prebuilt>=0.1.0
+langsmith>=0.1.0
+chromadb>=0.5.0
+langchain-community>=0.3.0
+# flask
+# openai
+# sentence-transformers
+# torch
+# numpy

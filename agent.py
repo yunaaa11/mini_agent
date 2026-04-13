@@ -1,88 +1,29 @@
-import json
-from llm import call_llm
-from tools import get_weather
-SYSTEM_PROMPT= """
-你是一个严格的工具型 Agent,不是聊天助手。
+from langchain_core.messages import HumanMessage
+from graph import app
+from logger import default_logger as logger
+import asyncio
+async def run_agent(task:str, session_id: str = "default")->str:
+    """
+    执行 Agent,支持多轮对话记忆。
+    session_id: 区分不同会话，相同 session_id 会记住历史。
+    """
+    logger.info(f"收到任务: {task}, session_id={session_id}")
+    config={"configurable":{"thread_id":session_id}}
+    final_state=await app.ainvoke(
+        {"messages":[HumanMessage(content=task)]},
+        config=config
+    )
+    last_message=final_state["messages"][-1]
+    if hasattr(last_message,"content"):
+        result=last_message.content
+    else:
+        result=str(last_message)
+    logger.info(f"Agent 返回: {result}")
+    return result
 
-你只能做两件事之一：
-
-【情况一】需要调用工具  
-你必须只返回 JSON,禁止返回任何解释性文字，格式如下：
-{
-  "tool": "get_weather",
-  "args": {
-    "city": "<从用户任务中识别的城市名>"
-  }
-}
-
-【情况二】工具已经返回结果  
-你必须基于工具结果，用中文给出最终答案。
-
-⚠️ 重要规则：
-- 如果用户问题涉及“天气”，你【必须】调用 get_weather 工具
-- 第一次回复【只能】是 JSON 或最终答案
-- 禁止说“请稍等 / 我将为您 / 好的”
-- 禁止寒暄
-"""
-def run_agent(task:str):
-    # 初始化对话消息列表
-    # system：定义智能体的整体行为和规则
-    # user：用户当前任务
-    messages=[
-        {"role":"system","content":SYSTEM_PROMPT},
-        {"role":"user","content":task}
-    ]
-    # 第一次：让 LLM 决定是否调用工具
-    print("[Agent] 调用 LLM 决策是否使用工具")
-    reply=call_llm(messages)
-    print("[LLM 第一次回复]")
-    print(reply)
-    if reply.startswith("[LLM_ERROR]"):
-       return reply
-    try:
-        # 尝试将 LLM 的回复解析为 JSON
-        # 如果能解析，说明 LLM 可能在请求调用工具
-        tool_call=json.loads(reply)
-    except json.JSONDecodeError:
-         print("[Agent] 未触发工具，直接返回模型结果")
-         return reply
-        # 判断是否是天气查询工具
-    if tool_call["tool"]=="get_weather":
-            # 从工具参数中取出城市信息
-           city=tool_call["args"]["city"]
-           print(f"[Agent] 调用工具 get_weather，city={city}")
-           # 调用真实工具（非 LLM）
-           result=get_weather(city)
-           print("[Agent] 工具返回结果：", result)
-           # 把 LLM 的“工具调用请求”加入上下文
-           messages.append({"role":"assistant","content":reply})
-            # 把工具执行结果返回给 LLM
-            # 让它基于真实数据生成最终回答
-           messages.append({
-               "role":"user",
-               "content":f"工具返回结果：{result}，请给用户最终回答"
-           })
-           # 第二次调用 LLM
-            # 目的：生成最终自然语言回复
-           final_answer=call_llm(messages)
-           if final_answer.startswith("[LLM_ERROR]"):
-               return final_answer
-           print("[Agent] 最终输出")
-           return final_answer
-
-    # 4️⃣ 未识别的工具
-    return "[Agent_ERROR] 未识别的工具调用"
-    
-# #用户任务
-#    ↓
-# #LLM 第一次回复（决定是否用工具）
-#    ↓
-# #是否是 JSON 工具调用？
-#    ├── 否 → 直接回答
-#    └── 是
-#         ↓
-#      调用真实工具
-#         ↓
-#      工具结果 → 再喂给 LLM
-#         ↓
-#      LLM 生成最终回答
+if __name__ == "__main__":
+    # 测试多轮记忆
+    print("=== 第一轮 ===")
+    print(run_agent("北京天气怎么样", session_id="user1"))
+    print("\n=== 第二轮（应该记住上一轮话题） ===")
+    print(run_agent("那上海呢", session_id="user1"))
