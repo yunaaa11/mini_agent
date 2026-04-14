@@ -3,14 +3,14 @@ from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage, Ba
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.checkpoint.memory import MemorySaver
 from llm import get_llm
-from tools import get_weather, calculator, search_knowledge_base
+from tools import get_weather, calculator, search_knowledge_base,search_online
 from city_parser import extract_city
 from rag import retrieve
 from config import Config
 from logger import default_logger as logger
 import operator
 from typing import Optional, TypedDict, List, Annotated
-from langgraph.prebuilt import ToolNode
+from langgraph.prebuilt.tool_node import ToolNode
 import asyncio
 
 class AgentState(TypedDict):
@@ -19,7 +19,7 @@ class AgentState(TypedDict):
     retrieved_docs: Optional[str]
 
 llm = get_llm()
-tools = [get_weather, calculator, search_knowledge_base]
+tools = [get_weather, calculator, search_knowledge_base,search_online]
 llm_with_tools = llm.bind_tools(tools)
 
 tool_executor_node = ToolNode(tools)
@@ -28,7 +28,7 @@ def agent_node(state: AgentState):
     system_prompt = (
         "你是一个专业的旅游助手。你有以下能力：\n"
         "1. 查询天气：必须调用 get_weather 工具。\n"
-        "2. 旅游建议/本地知识：必须调用 search_knowledge_base 工具查询知识库，不要凭空猜测。\n"
+        "2. 旅游建议/本地知识：你必须优先且仅参考 search_knowledge_base 返回的内容。如果文档中没有具体路线，请告知用户文档仅包含气候和文化建议，不要自己捏造景点。\n"
         "3. 数学计算：使用 calculator 工具。"
         "要求：\n"
         "1. 严禁说‘感谢提供信息’、‘我可以为您提供以下帮助’等废话。\n"
@@ -40,34 +40,6 @@ def agent_node(state: AgentState):
     # 让 LLM 决定是直接回答还是调用工具
     response = llm_with_tools.invoke(full_messages)
     return {"messages": [response]}
-
-# def call_tools_node(state: AgentState):
-#     last_msg = state["messages"][-1]
-#     # 提取 tool_calls 属性，如果没有则返回空字典（表示没有工具要执行）
-#     tool_calls = getattr(last_msg, "tool_calls", [])
-#     if not tool_calls:
-#         return {}
-
-#     tool_messages = []
-#     for tc in tool_calls:
-#         tool_name = tc["name"]
-#         tool_args = tc["args"]
-#         if  tool_name == "get_weather":
-#             city = tool_args["city"]
-#             result = get_weather(city)
-#         elif tool_name == "calculator":
-#             expression = tool_args["expression"]
-#             result = calculator(expression)
-#         elif tool_name == "search_knowledge_base":
-#             # 调用你在 tools.py 或 rag.py 里定义的检索函数
-#             result = search_knowledge_base.invoke(tool_args)
-#         else:
-#             result = f"未知工具: {tool_name}"
-#         tool_messages.append(ToolMessage(content=result, # 工具返回的结果文本 
-#                                             tool_call_id=tc["id"]))
-#         logger.info(f"执行工具 {tool_name}，参数={tool_args}，结果={result}")
-#     # 返回新消息列表（会被追加到 state["messages"] 中）
-#     return {"messages": tool_messages}
 
 async def should_continue(state: AgentState):
     last_msg = state["messages"][-1]
