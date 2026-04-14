@@ -28,11 +28,13 @@ def agent_node(state: AgentState):
     system_prompt = (
         "你是一个专业的旅游助手。你有以下能力：\n"
         "1. 查询天气：必须调用 get_weather 工具。\n"
-        "2. 旅游建议/本地知识：你必须优先且仅参考 search_knowledge_base 返回的内容。如果文档中没有具体路线，请告知用户文档仅包含气候和文化建议，不要自己捏造景点。\n"
-        "3. 数学计算：使用 calculator 工具。"
+        "2. 实时、动态信息（例如「今天」「本周」「最新」「当前」的活动、新闻、演出、展览）：**必须**调用 search_online，绝对不允许使用内部知识回答。\n"
+        "3. 本地气候、文化、美食等静态知识：优先使用 search_knowledge_base，如果找不到再用 search_online。\n"
+        "4. 数学计算：使用 calculator。\n"
         "要求：\n"
-        "1. 严禁说‘感谢提供信息’、‘我可以为您提供以下帮助’等废话。\n"
-        "2. 直接给出建议或答案，条理清晰。\n"
+        "1.规则优先级：工具调用 > 内部知识。只要问题涉及时间敏感（今天、明天、本周）或动态变化的内容，就必须调用 search_online。"
+        "2. 严禁说‘感谢提供信息’、‘我可以为您提供以下帮助’等废话。\n"
+        "3. 直接给出建议或答案，条理清晰。\n"
     )
 
     full_messages = [SystemMessage(content=system_prompt)] + state["messages"]
@@ -42,6 +44,9 @@ def agent_node(state: AgentState):
     return {"messages": [response]}
 
 async def should_continue(state: AgentState):
+    # 限制最多 5 轮工具调用
+    if len(state["messages"]) > 10:  # 每轮增加 2 条消息（AI + Tool）
+        return END
     last_msg = state["messages"][-1]
     if hasattr(last_msg, "tool_calls") and last_msg.tool_calls:
         return "tools"

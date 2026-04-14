@@ -1,4 +1,5 @@
 from langchain_community.document_loaders import TextLoader
+from langchain_community.retrievers import BM25Retriever
 from langchain_community.vectorstores import Chroma
 from langchain_openai import OpenAIEmbeddings
 from langchain_core.documents import Document
@@ -65,6 +66,7 @@ def retrieve(query:str,top_k:int=1):
     """兼容旧接口，返回文档字符串列表"""
     docs=retriever.invoke(query)
     return [doc.page_content for doc in docs[:top_k]]
+
 
 if __name__ == "__main__":
     # 测试检索

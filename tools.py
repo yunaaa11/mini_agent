@@ -1,3 +1,4 @@
+from config import Config
 from logger import default_logger as logger
 from langchain.tools import tool
 from rag import retriever
@@ -5,8 +6,11 @@ from city_parser import extract_city
 import asyncio
 from flashrank import Ranker, RerankRequest
 from langchain_community.document_compressors import FlashrankRerank
-from langchain_community.tools.tavily_search import TavilySearchResults
+from langchain_tavily import TavilySearch
+from asteval import Interpreter
+aeval = Interpreter()
 ranker = Ranker(model_name="ms-marco-TinyBERT-L-2-v2")
+vector_retriever =retriever.vectorstore.as_retriever(search_kwargs={"k": 10})
 @tool
 async def get_weather(city:str) -> str:
     """获取指定城市的天气信息。城市名必须是中文，如'北京'、'上海'、'广州'。"""
@@ -23,8 +27,12 @@ async def calculator(expression:str)->str:
     """计算数学表达式，例如'2+3*4'"""
     logger.info(f"调用工具 calculator,表达式={expression}")
     try:
-        result=eval(expression,{"__built__":{}},{})
-        return f"计算结果:{result}"
+        # 在受限环境中执行表达式
+        result = aeval(expression)
+        if aeval.error:
+            # 如果表达式不合法（例如包含非法函数或语法错误）
+            return f"计算错误: {aeval.error}"
+        return f"计算结果: {result}"
     except Exception as e:
         return f"计算错误: {e}"
 @tool
@@ -33,9 +41,7 @@ async def search_knowledge_base(query: str) -> str:
     logger.info(f"调用检索工具, 查询词={query}")
     target_city = extract_city(query)
     try:
-        base_docs = await retriever.vectorstore.as_retriever(
-            search_kwargs={"k": 10}
-        ).ainvoke(query)
+        base_docs = await vector_retriever.ainvoke(query)
         # 3. 【核心改动】手动过滤：只保留包含目标城市名称的文档
         if target_city:
             filtered_docs = [
@@ -47,7 +53,6 @@ async def search_knowledge_base(query: str) -> str:
             filtered_docs = base_docs
         if not filtered_docs:
             return "未找到相关知识。"
-        
         # Step 2: 准备 Rerank 数据格式
         # FlashRank 需要一个包含 id, text, meta 的字典列表
         passages = [
@@ -56,11 +61,11 @@ async def search_knowledge_base(query: str) -> str:
                 "text": doc.page_content,
                 "meta": doc.metadata
             }
-            for i, doc in enumerate(base_docs)
+            for i, doc in enumerate(filtered_docs)
         ]
 
         rerank_request = RerankRequest(query=query, passages=passages)
-        results = ranker.rerank(rerank_request)
+        results = await asyncio.to_thread(ranker.rerank, rerank_request)
         logger.info(f"Rerank 后的最高分文档内容: {results[0]['text'][:50]}...")
         top_n = 3
         reranked_content = [res["text"] for res in results[:top_n]]
@@ -73,7 +78,16 @@ async def search_knowledge_base(query: str) -> str:
 @tool
 async def search_online(query:str):
      """当本地知识库无法回答，或者需要查询最新的天气、活动、突发情况时，调用此在线搜索工具。"""
-     search=TavilySearchResults(k=3)
-     results=await search.ainvoke(query)
-     return results
+     logger.info(f"调用在线搜索工具, 查询词={query}")
+     try:
+        search=TavilySearch(api_key=Config.TAVILY_API_KEY,k=3)
+        results=await search.ainvoke(query)
+        if isinstance(results, list):
+                formatted = "\n".join([str(r) for r in results])
+        else:
+                formatted = str(results)
+                return formatted
+     except Exception as e:
+        logger.error(f"在线搜索失败: {e}")
+        return f"搜索失败：{e}"
 #工具可以是数据库、接口、搜索、计算器

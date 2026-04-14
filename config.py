@@ -19,7 +19,7 @@ class Config:
     chunk_size = int(os.getenv("chunk_size", 100))
     chunk_overlap = int(os.getenv("chunk_overlap", 50))
     separators=os.getenv("separators")
-    TAVILY_API_KEY =os.getenv("TAVILY_API_KEY ")
+    TAVILY_API_KEY =os.getenv("TAVILY_API_KEY")
 
 
     # ===== 功能开关 =====
