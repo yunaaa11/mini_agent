@@ -8,20 +8,39 @@ from flashrank import Ranker, RerankRequest
 from langchain_community.document_compressors import FlashrankRerank
 from langchain_tavily import TavilySearch
 from asteval import Interpreter
+from cachetools import TTLCache
+import hashlib
 aeval = Interpreter()
 ranker = Ranker(model_name="ms-marco-TinyBERT-L-2-v2")
 vector_retriever =retriever.vectorstore.as_retriever(search_kwargs={"k": 10})
+cache = TTLCache(maxsize=100, ttl=300)
+def get_cache_key(prefix: str, *args) -> str:
+    """生成缓存键，例如 'weather:北京' -> MD5 或直接字符串"""
+    raw = f"{prefix}:{':'.join(str(a) for a in args)}"
+    # 如果键过长可 MD5 压缩，这里直接用原字符串（长度通常不长）
+    return raw
+
 @tool
 async def get_weather(city:str) -> str:
     """获取指定城市的天气信息。城市名必须是中文，如'北京'、'上海'、'广州'。"""
     logger.info(f"调用工具 get_weather,城市={city}")
+    # 1. 检查缓存
+    cache_key = get_cache_key("weather", city)
+    if cache_key in cache:
+        logger.info(f"天气缓存命中: {city}")
+        return cache[cache_key]
+    
     await asyncio.sleep(1)
     fake_weather={
         "北京":"晴天,5°C",
         "上海":"多云,8°C",
         "广州": "小雨, 15°C"
     }
-    return fake_weather.get(city, "暂无该城市天气数据")
+    result=fake_weather.get(city, "暂无该城市天气数据")
+    # 3. 存入缓存
+    cache[cache_key] = result
+    return result
+
 @tool
 async def calculator(expression:str)->str:
     """计算数学表达式，例如'2+3*4'"""
@@ -40,6 +59,11 @@ async def search_knowledge_base(query: str) -> str:
     """当用户询问关于气候、文化、美食或旅游建议等本地知识时，搜索知识库获取准确信息。"""
     logger.info(f"调用检索工具, 查询词={query}")
     target_city = extract_city(query)
+    # 生成缓存键（区分有无城市）
+    cache_key = get_cache_key("kb", query, target_city if target_city else "none")
+    if cache_key in cache:
+        logger.info(f"知识库缓存命中: {query[:30]}...")
+        return cache[cache_key]
     try:
         base_docs = await vector_retriever.ainvoke(query)
         # 3. 【核心改动】手动过滤：只保留包含目标城市名称的文档
@@ -69,12 +93,15 @@ async def search_knowledge_base(query: str) -> str:
         logger.info(f"Rerank 后的最高分文档内容: {results[0]['text'][:50]}...")
         top_n = 3
         reranked_content = [res["text"] for res in results[:top_n]]
-        return "\n\n".join(reranked_content)
+        final_result = "\n\n".join(reranked_content)
     except Exception as e:
         logger.error(f"Rerank 检索失败: {e}")
         # 降级处理：如果 Rerank 出错，使用基础检索
         docs = await retriever.ainvoke(query)
-        return "\n\n".join([d.page_content for d in docs])
+        final_result = "\n\n".join([d.page_content for d in docs])
+     # 存入缓存
+        cache[cache_key] = final_result
+        return final_result
 @tool
 async def search_online(query:str):
      """当本地知识库无法回答，或者需要查询最新的天气、活动、突发情况时，调用此在线搜索工具。"""

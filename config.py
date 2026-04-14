@@ -20,6 +20,7 @@ class Config:
     chunk_overlap = int(os.getenv("chunk_overlap", 50))
     separators=os.getenv("separators")
     TAVILY_API_KEY =os.getenv("TAVILY_API_KEY")
+    MD5_RECORD_FILE = os.getenv('MD5_RECORD_FILE', './processed_md5.txt')
 
 
     # ===== 功能开关 =====

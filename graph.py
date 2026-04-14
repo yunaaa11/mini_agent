@@ -29,7 +29,7 @@ def agent_node(state: AgentState):
         "你是一个专业的旅游助手。你有以下能力：\n"
         "1. 查询天气：必须调用 get_weather 工具。\n"
         "2. 实时、动态信息（例如「今天」「本周」「最新」「当前」的活动、新闻、演出、展览）：**必须**调用 search_online，绝对不允许使用内部知识回答。\n"
-        "3. 本地气候、文化、美食等静态知识：优先使用 search_knowledge_base，如果找不到再用 search_online。\n"
+        "3. 对于知识库相关的问题（历史、文化、美食、气候等）优先使用 search_knowledge_base，如果找不到再用 search_online。\n"
         "4. 数学计算：使用 calculator。\n"
         "要求：\n"
         "1.规则优先级：工具调用 > 内部知识。只要问题涉及时间敏感（今天、明天、本周）或动态变化的内容，就必须调用 search_online。"
@@ -62,9 +62,9 @@ workflow.add_edge("tools", "agent")
 
 saver = MemorySaver()
 app = workflow.compile(checkpointer=saver)
-graph_png=app.get_graph().draw_mermaid_png()
-with open("langgraph.png","wb") as f:
-     f.write(graph_png)
+# graph_png=app.get_graph().draw_mermaid_png()
+# with open("langgraph.png","wb") as f:
+#      f.write(graph_png)
     
 if __name__ == "__main__":
     from langchain_core.messages import HumanMessage
