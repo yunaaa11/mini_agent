@@ -1,6 +1,8 @@
+import os
+import sqlite3
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage, BaseMessage
-from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.checkpoint.memory import MemorySaver
 from llm import get_llm
 from tools import get_weather, calculator, search_knowledge_base,search_online
@@ -33,8 +35,9 @@ def agent_node(state: AgentState):
         "4. 数学计算：使用 calculator。\n"
         "要求：\n"
         "1.规则优先级：工具调用 > 内部知识。只要问题涉及时间敏感（今天、明天、本周）或动态变化的内容，就必须调用 search_online。"
-        "2. 严禁说‘感谢提供信息’、‘我可以为您提供以下帮助’等废话。\n"
-        "3. 直接给出建议或答案，条理清晰。\n"
+        "2. 不要盲目追求‘最新’而忽略本地 PDF 文档中的具体规则。"
+        "3. 严禁说‘感谢提供信息’、‘我可以为您提供以下帮助’等废话。\n"
+        "4. 直接给出建议或答案，条理清晰。\n"
     )
 
     full_messages = [SystemMessage(content=system_prompt)] + state["messages"]
@@ -60,8 +63,25 @@ workflow.set_entry_point("agent")
 workflow.add_conditional_edges("agent", should_continue, {"tools": "tools", END: END})
 workflow.add_edge("tools", "agent")
 
-saver = MemorySaver()
-app = workflow.compile(checkpointer=saver)
+_app = None
+_saver_context= None
+async def get_agent_app():
+     #函数内部修改函数外部定义的变量，必须声明 global
+    global _app, _saver_context
+    if _app is None:
+        # 1. 定义文件夹和路径
+        db_dir = "data"  # 文件夹名
+        db_path = os.path.join(db_dir, "checkpoints.sqlite")
+        # 2. 如果文件夹不存在，则自动创建
+        if not os.path.exists(db_dir):
+            os.makedirs(db_dir) 
+        # 3. 使用新路径初始化
+        _saver_context = AsyncSqliteSaver.from_conn_string(db_path)
+        # 2. 激活这个上下文管理器，拿到真正的 saver 对象
+        # 注意这里是调用 __aenter__()，而不是 aenter()
+        saver = await _saver_context.__aenter__()
+        _app = workflow.compile(checkpointer=saver)
+    return _app
 # graph_png=app.get_graph().draw_mermaid_png()
 # with open("langgraph.png","wb") as f:
 #      f.write(graph_png)
@@ -70,6 +90,7 @@ if __name__ == "__main__":
     from langchain_core.messages import HumanMessage
     # 测试单轮
     async def main():
+        app = await get_agent_app()
         config = {"configurable": {"thread_id": "test1"}}
         result =await  app.ainvoke(
             {"messages": [HumanMessage(content="北京天气")]},

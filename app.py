@@ -32,10 +32,11 @@ async def health():
 @app.post("/agent")
 async def agent_api(request:TaskRequest):
     task=request.task
+    session_id = request.session_id
     if not task:
         raise HTTPException(status_code=400,detail="Missing task")
     result=await run_agent(task,request.session_id)
-    return {"result":result}
+    return {"result":result, "session_id": session_id}
 
 @app.post("/upload_knowledge")
 async def upload_knowledge(file:UploadFile=File(...)):
