@@ -1,8 +1,12 @@
+import asyncio
+import json
 import os
 import tempfile
 from fastapi import FastAPI, File,HTTPException, UploadFile
+from fastapi.responses import StreamingResponse
 from langchain_community.document_loaders import PyPDFLoader
 from pydantic import BaseModel
+from sse_starlette import EventSourceResponse
 from agent import run_agent
 import uvicorn
 from config import Config
@@ -31,12 +35,27 @@ async def health():
 #集成请求日志
 @app.post("/agent")
 async def agent_api(request:TaskRequest):
-    task=request.task
-    session_id = request.session_id
-    if not task:
-        raise HTTPException(status_code=400,detail="Missing task")
-    result=await run_agent(task,request.session_id)
-    return {"result":result, "session_id": session_id}
+    # 验证输入
+    if not request.task:
+        raise HTTPException(status_code=400, detail="Task is empty")
+    # 1. 获取异步生成器
+    generator = run_agent(request.task, request.session_id)
+    # 2. 定义一个包装器，将 Token 封装进 SSE 的 data 字段中
+    async def event_publisher():
+        try:
+            # 启动时可以先发一个配置包
+            yield {"event": "info", "data": json.dumps({"session_id": request.session_id})}
+            async for token in generator:
+                # 检查连接是否还活着（可选）
+                yield {
+                    "event": "message",  # 事件类型，前端默认监听 message
+                    "data": token,       # 实际传给前端的内容
+                }
+        except Exception as e:
+            logger.error(f"Stream error: {e}")
+            yield {"event": "error", "data": str(e)}
+    # 3. 返回标准的 SSE 响应
+    return EventSourceResponse(event_publisher())
 
 @app.post("/upload_knowledge")
 async def upload_knowledge(file:UploadFile=File(...)):

@@ -5,6 +5,6 @@ test_venv
 __pycache__/
 logs/
 .vscode/
-data
-chroma_db
+data/
+chroma_db/
 processed_md5.txt
