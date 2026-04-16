@@ -117,4 +117,27 @@ async def search_online(query:str):
      except Exception as e:
         logger.error(f"在线搜索失败: {e}")
         return f"搜索失败：{e}"
+# tools.py 
+
+@tool
+async def book_train_ticket(name: str, id_card: str, destination: str) -> str:
+    """
+    用于预订火车票。
+    必须提供完整的：姓名(name)、身份证号(id_card)和目的地(destination)。
+    """
+    logger.info(f"调用订票工具: 姓名={name}, 目的地={destination}")
+    
+    try:
+        # 这里模拟一个身份证格式的简单校验（体现你的工程严谨性）
+        if len(id_card) < 15:
+            return "预订失败：身份证号码格式不正确，请重新提供。"
+            
+        # 模拟业务处理延迟
+        await asyncio.sleep(0.5) 
+        
+        return f"【12306 预订成功】\n乘客姓名：{name}\n证件号码：{id_card}\n目的地：{destination}\n状态：已出票（模拟）"
+        
+    except Exception as e:
+        logger.error(f"订票工具执行异常: {e}")
+        return f"系统繁忙，预订失败，请稍后再试。错误原因: {e}"
 #工具可以是数据库、接口、搜索、计算器

@@ -34,7 +34,15 @@ async def run_agent(task:str, session_id: str = "default")-> AsyncGenerator[str,
                 if last_type == "thought":
                     yield "[THOUGHT_END]" # 思考结束
                     last_type = "content"
+                elif last_type is None:
+                    # 第一次输出内容，且没有经历 thought 阶段
+                    last_type = "content"
+                
                 yield content
+
+    # 善后：如果流程结束了 last_type 还是 thought，强制关闭它
+    if last_type == "thought":
+        yield "[THOUGHT_END]"
 
 if __name__ == "__main__":
     # 测试多轮记忆

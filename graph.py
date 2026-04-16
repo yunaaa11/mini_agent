@@ -1,11 +1,11 @@
 import os
 import sqlite3
 from langgraph.graph import StateGraph, END
-from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage, BaseMessage
+from langchain_core.messages import AIMessage, SystemMessage, HumanMessage, ToolMessage, BaseMessage
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.checkpoint.memory import MemorySaver
 from llm import get_llm
-from tools import get_weather, calculator, search_knowledge_base,search_online
+from tools import get_weather, calculator, search_knowledge_base,search_online,book_train_ticket
 from city_parser import extract_city
 from rag import retrieve
 from config import Config
@@ -21,11 +21,48 @@ class AgentState(TypedDict):
     retrieved_docs: Optional[str]
 
 llm = get_llm()
-tools = [get_weather, calculator, search_knowledge_base,search_online]
-llm_with_tools = llm.bind_tools(tools)
+# 通用 Agent 工具集
+general_tools = [get_weather, calculator, search_knowledge_base, search_online]
+llm_with_general_tools=llm.bind_tools(general_tools)
+general_tools_node=ToolNode(general_tools)
+# 订票专家工具集
+booking_tools = [book_train_ticket]
+llm_with_booking_tools=llm.bind_tools(booking_tools)
+booking_tools_node=ToolNode(booking_tools)
 
-tool_executor_node = ToolNode(tools)
-def agent_node(state: AgentState):
+#路由：根据用户输入特征选择路径
+def router(state:AgentState):
+    messages = state["messages"]
+    last_message = messages[-1].content.lower()
+    # 路径 1: 闲聊/简单打招呼 -> direct_reply
+    greetings = ["你好", "hi", "hello", "在吗", "早上好"]
+    if any(g in last_message for g in greetings) and len(last_message)<10:
+        return "direct_reply"
+    
+    # 路径 2: 订票意图识别与上下文粘滞
+    is_in_booking_flow = False
+    # 逆向遍历历史消息，查找最近的 AI 消息
+    for msg in reversed(messages[:-1]):
+        if isinstance(msg, AIMessage):
+            # 如果 AI 的上一句包含关键引导词，判定为处于订票流程中
+            if any(key in msg.content for key in ["姓名", "身份证", "目的地", "订票"]):
+                is_in_booking_flow = True
+            break # 只看最近的一条 AI 消息即可，避免跨度太长的“记忆干扰”
+
+    booking_keywords = ["订票", "买票", "票", "下单", "预订", "购票"]
+    if any(k in last_message for k in booking_keywords) or is_in_booking_flow:
+        logger.info("--- 路由决策: 进入订票专家 ---")
+        return "booking_expert"
+    
+    # 路径 3: 默认走通用 RAG Agent -> agent
+    return "agent"
+
+# 快速回复节点
+def direct_reply_node(state: AgentState):
+    content = "您好！我是您的智能助理。我可以帮您查天气、搜攻略，或者直接帮您订火车票。请问今天有什么可以帮您？"
+    return {"messages": [AIMessage(content=content)]}
+# 通用 Agent 节点 (负责 RAG 和 外部搜索)
+async def agent_node(state: AgentState):
     # 构建系统提示，告诉 LLM 有哪些工具
     system_prompt = (
         "你是一个专业的旅游助手。你有以下能力：\n"
@@ -37,16 +74,29 @@ def agent_node(state: AgentState):
         "1.规则优先级：工具调用 > 内部知识。只要问题涉及时间敏感（今天、明天、本周）或动态变化的内容，就必须调用 search_online。"
         "2. 不要盲目追求‘最新’而忽略本地 PDF 文档中的具体规则。"
         "3. 严禁说‘感谢提供信息’、‘我可以为您提供以下帮助’等废话。\n"
-        "4. 直接给出建议或答案，条理清晰。\n"
+        "4.如果用户提到订票相关的后续补充信息，请指引用户继续完成流程，不要说你没有订票权限。"
+        "5. 直接给出建议或答案，条理清晰。\n"
     )
 
     full_messages = [SystemMessage(content=system_prompt)] + state["messages"]
     
     # 让 LLM 决定是直接回答还是调用工具
-    response = llm_with_tools.invoke(full_messages)
+    response = await llm_with_general_tools.ainvoke(full_messages)
     return {"messages": [response]}
 
-async def should_continue(state: AgentState):
+# 订票专家节点 (负责引导用户补全身份信息)
+async def booking_expert_node(state:AgentState):
+    system_prompt = (
+        "你是一个订票专家。预订火车票必须具备：姓名、身份证号、目的地。\n"
+        "【核心规则】：\n"
+        "1. 只要缺一项信息，就必须针对性地追问，严禁引导用户去 12306。\n"
+        "2. 只要信息全了，**必须**调用 book_train_ticket 工具。\n"
+        "3. 身份证号必须是 18 位，不符请提示用户重输。"
+    )
+    full_messages=[SystemMessage(content=system_prompt)]+state["messages"]
+    response=await llm_with_booking_tools.ainvoke(full_messages)
+    return {"messages":[response]}
+async def should_continue_general(state: AgentState):
     # 限制最多 5 轮工具调用
     if len(state["messages"]) > 10:  # 每轮增加 2 条消息（AI + Tool）
         return END
@@ -54,15 +104,37 @@ async def should_continue(state: AgentState):
     if hasattr(last_msg, "tool_calls") and last_msg.tool_calls:
         return "tools"
     return END
+async def should_continue_booking(state: AgentState):
+    last_msg = state["messages"][-1]
+    if hasattr(last_msg, "tool_calls") and last_msg.tool_calls:
+        return "booking_tools"
+    return END
 
 workflow = StateGraph(AgentState)
+workflow.add_node("direct_reply",direct_reply_node)
 workflow.add_node("agent", agent_node)
-workflow.add_node("tools", tool_executor_node)
-
-workflow.set_entry_point("agent")
-workflow.add_conditional_edges("agent", should_continue, {"tools": "tools", END: END})
+workflow.add_node("tools", general_tools_node)
+workflow.add_node("booking_expert", booking_expert_node)
+workflow.add_node("booking_tools",booking_tools_node)
+# 设置意图入口
+workflow.set_conditional_entry_point(
+    router,
+    {
+        "direct_reply": "direct_reply",
+        "agent": "agent",
+        "booking_expert": "booking_expert"
+    }
+)
+#定义边
+workflow.add_edge("direct_reply",END)
+# 通用 RAG 链路
+workflow.add_conditional_edges("agent", should_continue_general, {"tools": "tools", END: END})
 workflow.add_edge("tools", "agent")
+# 业务订票链路
+workflow.add_conditional_edges("booking_expert", should_continue_booking, {"booking_tools": "booking_tools", END: END})
+workflow.add_edge("booking_tools", "booking_expert")
 
+# --- 持久化与工厂函数 ---
 _app = None
 _saver_context= None
 async def get_agent_app():
@@ -87,16 +159,26 @@ async def get_agent_app():
 #      f.write(graph_png)
     
 if __name__ == "__main__":
-    from langchain_core.messages import HumanMessage
-    # 测试单轮
     async def main():
         app = await get_agent_app()
-        config = {"configurable": {"thread_id": "test1"}}
-        result =await  app.ainvoke(
-            {"messages": [HumanMessage(content="北京天气")]},
-            config=config
-        )
-        print("最终回答:", result["messages"][-1].content)
+        # 核心：这个 ID 决定了记忆的归属
+        config = {"configurable": {"thread_id": "user_session_123"}}
+        
+        print("--- 旅游助理已上线（输入 'exit' 退出） ---")
+        
+        while True:
+            user_input = input("\n用户: ")
+            if user_input.lower() in ["exit", "quit", "退出"]:
+                break
+            
+            # 使用 astream 持续监听状态变化
+            inputs = {"messages": [HumanMessage(content=user_input)]}
+            async for event in app.astream(inputs, config=config, stream_mode="values"):
+                # 我们只看最后一项输出（即最新的消息）
+                if "messages" in event:
+                    last_msg = event["messages"][-1]
+                    if isinstance(last_msg, AIMessage):
+                        print(f"助理: {last_msg.content}")
     asyncio.run(main())
 # 用户输入: "北京天气"
 #     ↓
