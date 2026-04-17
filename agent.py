@@ -11,7 +11,7 @@ async def run_agent(task:str, session_id: str = "default")-> AsyncGenerator[str,
     session_id: 区分不同会话，相同 session_id 会记住历史。
     """
     app = await get_agent_app()
-    logger.info(f"收到任务: {task}, session_id={session_id}")
+    logger.info(f"收到任务: {task}", extra={"session_id": session_id})
     config={"configurable":{"thread_id":session_id}}
     input_data={"messages":[HumanMessage(content=task)]}
     last_type = None

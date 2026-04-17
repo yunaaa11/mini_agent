@@ -1,26 +1,41 @@
 import logging
-import sys
+from logging.handlers import RotatingFileHandler
 import os
-from config import Config
-def setup_logger(name:str="agent")->logging.Logger:
-    """配置日志对象，同时输出到文件和控制台"""
-    # 确保 logs 文件夹存在
-    if not os.path.exists('logs'):
-        os.makedirs('logs')
-    logger=logging.getLogger(name)
+
+# 1. 动态注入 Session ID 的过滤器
+class ContextFilter(logging.Filter):
+    def filter(self, record):
+        # 如果 record 里没有 session_id，给个默认值
+        if not hasattr(record, "session_id"):
+            record.session_id = "SYSTEM"
+        return True
+
+def setup_logger():
+    logger = logging.getLogger("agent")
     logger.setLevel(logging.INFO)
-    #控制台
-    console=logging.StreamHandler(sys.stdout)
-    console.setLevel(logging.INFO)
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    console.setFormatter(formatter)
-    logger.addHandler(console)
-    # 文件处理器 确定存哪
-    file_handler = logging.FileHandler("logs/agent.log", encoding="utf-8")
-    file_handler.setLevel(logging.DEBUG)
-    file_handler.setFormatter(formatter)
-    logger.addHandler(file_handler)
+    
+    # 避免重复添加 Handler
+    if not logger.handlers:
+        # 2. 改进：日志轮转 (每个文件 5MB, 保留 5 个备份)
+        log_file = "logs/agent.log"
+        handler = RotatingFileHandler(
+            log_file, maxBytes=5*1024*1024, backupCount=5, encoding='utf-8'
+        )
+        
+        # 3. 改进：格式化加入 session_id
+        formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - [%(session_id)s] - %(levelname)s - %(message)s'
+        )
+        handler.setFormatter(formatter)
+        
+        logger.addHandler(handler)
+        logger.addFilter(ContextFilter())
+        
+        # 同时输出到控制台方便调试
+        console = logging.StreamHandler()
+        console.setFormatter(formatter)
+        logger.addHandler(console)
+        
     return logger
 
-# 全局默认 logger
 default_logger = setup_logger()

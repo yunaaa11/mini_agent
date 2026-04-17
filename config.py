@@ -16,7 +16,7 @@ class Config:
     EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-v1")
     PERSIST_DIR = os.getenv("PERSIST_DIR", "./chroma_db")
     KNOWLEDGE_DIR = os.getenv("KNOWLEDGE_DIR", "./knowledge_base")
-    chunk_size = int(os.getenv("chunk_size", 100))
+    chunk_size = int(os.getenv("chunk_size", 500))
     chunk_overlap = int(os.getenv("chunk_overlap", 50))
     separators=os.getenv("separators")
     TAVILY_API_KEY =os.getenv("TAVILY_API_KEY")
