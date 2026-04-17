@@ -10,7 +10,12 @@ import os
 from rag_data import DOCS
 import hashlib
 from logger import default_logger as logger
-
+from langchain_core.documents import Document
+    # 尝试 1.x 版本的统一调用接口
+from magic_pdf.data.data_reader_writer import FileBasedDataWriter, FileBasedDataReader
+    # 注意：新版本中 UNIPipe 可能被整合，我们通过以下方式获取解析器
+from magic_pdf.model.doc_analyze_by_custom_model import ModelSingleton
+HAS_MINERU = True
 # 初始化 embeddings
 embeddings = OpenAIEmbeddings(
     api_key=Config.OPENAI_API_KEY,
@@ -33,14 +38,12 @@ def is_md5_processed(md5_hash: str) -> bool:
 def mark_md5_processed(md5_hash: str):
     with open(Config.MD5_RECORD_FILE, 'a', encoding='utf-8') as f:
         f.write(md5_hash + '\n')
-
-
+    
 def load_documents_from_folder(folder_path:str):
     """从指定目录加载所有.txt、.pdf文件,并切分成小块"""
     if not os.path.exists(folder_path):
         print(f"创建目录 {folder_path}，请将知识库文件放入")
         return []
-    
     all_docs=[]
     for file in os.listdir(folder_path):
         if not (file.endswith('.txt') or file.endswith('.pdf')):

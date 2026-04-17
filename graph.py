@@ -31,7 +31,7 @@ llm_with_booking_tools=llm.bind_tools(booking_tools)
 booking_tools_node=ToolNode(booking_tools)
 
 #路由：根据用户输入特征选择路径
-def router(state:AgentState):
+async def router(state:AgentState):
     messages = state["messages"]
     last_message = messages[-1].content.lower()
     # 路径 1: 闲聊/简单打招呼 -> direct_reply
@@ -39,18 +39,19 @@ def router(state:AgentState):
     if any(g in last_message for g in greetings) and len(last_message)<10:
         return "direct_reply"
     
-    # 路径 2: 订票意图识别与上下文粘滞
-    is_in_booking_flow = False
-    # 逆向遍历历史消息，查找最近的 AI 消息
-    for msg in reversed(messages[:-1]):
-        if isinstance(msg, AIMessage):
-            # 如果 AI 的上一句包含关键引导词，判定为处于订票流程中
-            if any(key in msg.content for key in ["姓名", "身份证", "目的地", "订票"]):
-                is_in_booking_flow = True
-            break # 只看最近的一条 AI 消息即可，避免跨度太长的“记忆干扰”
+    # 2. 使用 LLM 进行意图识别 (语义路由)
+    router_llm = get_llm(timeout=10) # 路由不需要太高温度
+    prompt = f"""分类用户输入的意图。只需回答 "booking" 或 "general"。
+    - 用户想买票、订票、补全身份信息进行预订：回答 "booking"
+    - 用户问天气、景点、攻略、美食、计算或其他信息：回答 "general"
+    
+    用户输入: "{last_message}"
+    意图分类:"""
+    
+    response = await router_llm.ainvoke([HumanMessage(content=prompt)])
+    decision = response.content.strip().lower()
 
-    booking_keywords = ["订票", "买票", "票", "下单", "预订", "购票"]
-    if any(k in last_message for k in booking_keywords) or is_in_booking_flow:
+    if "booking" in decision:
         logger.info("--- 路由决策: 进入订票专家 ---")
         return "booking_expert"
     
@@ -63,6 +64,20 @@ def direct_reply_node(state: AgentState):
     return {"messages": [AIMessage(content=content)]}
 # 通用 Agent 节点 (负责 RAG 和 外部搜索)
 async def agent_node(state: AgentState):
+    # 1. 新增：查询重写 (Query Rewrite)
+    # 利用上下文将“那边有什么好吃的”改写为“西安有哪些推荐美食”
+    rewrite_llm = get_llm(temperature=0)
+    last_user_msg = state["messages"][-1].content
+    
+    rewrite_prompt = f"""根据对话历史，将用户的最新问题改写为一个完整、具体的搜索词。
+    历史记录: {state["messages"][-3:]} 
+    最新问题: {last_user_msg}
+    改写后的搜索词:"""
+    
+    rewrite_res = await rewrite_llm.ainvoke([HumanMessage(content=rewrite_prompt)])
+    search_query = rewrite_res.content.strip()
+    logger.info(f"--- 查询重写: {last_user_msg} -> {search_query} ---")
+    
     # 构建系统提示，告诉 LLM 有哪些工具
     system_prompt = (
         "你是一个专业的旅游助手。你有以下能力：\n"
