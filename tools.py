@@ -1,7 +1,7 @@
 from config import Config
 from logger import default_logger as logger
 from langchain.tools import tool
-from rag import retriever
+from rag import retriever, vectorstore
 from city_parser import extract_city
 import asyncio
 from flashrank import Ranker, RerankRequest
@@ -12,7 +12,7 @@ from cachetools import TTLCache
 import hashlib
 aeval = Interpreter()
 ranker = Ranker(model_name="ms-marco-TinyBERT-L-2-v2")
-vector_retriever =retriever.vectorstore.as_retriever(search_kwargs={"k": 10})
+vector_retriever = vectorstore.as_retriever(search_kwargs={"k": 10})
 cache = TTLCache(maxsize=100, ttl=300)
 def get_cache_key(prefix: str, *args) -> str:
     """生成缓存键，例如 'weather:北京' -> MD5 或直接字符串"""
@@ -58,27 +58,37 @@ async def calculator(expression:str)->str:
 async def search_knowledge_base(query: str) -> str:
     """当用户询问关于气候、文化、美食或旅游建议等本地知识时，搜索知识库获取准确信息。"""
     logger.info(f"调用检索工具, 查询词={query}")
-    target_city = extract_city(query)
-    # 生成缓存键（区分有无城市）
-    cache_key = get_cache_key("kb", query, target_city if target_city else "none")
+    
+    # 1. 提取城市（提前准备用于缓存键和过滤）
+    target_cities = extract_city(query)
+    
+    # 2. 检查缓存
+    cache_key = get_cache_key("kb", query, str(target_cities) if target_cities else "none")
     if cache_key in cache:
         logger.info(f"知识库缓存命中: {query[:30]}...")
         return cache[cache_key]
+
     try:
         base_docs = await vector_retriever.ainvoke(query)
-        # 3. 【核心改动】手动过滤：只保留包含目标城市名称的文档
-        if target_city:
+        
+        if not base_docs:
+            return "未找到相关知识。"
+
+        # 4. 手动过滤逻辑
+        if target_cities:
+            # 修正：使用 any 逻辑处理城市列表
             filtered_docs = [
                 doc for doc in base_docs 
-                if target_city in doc.page_content # 只有文本里带“上海”的才留下
+                if any(city in doc.page_content for city in target_cities)
             ]
             logger.info(f"过滤前 {len(base_docs)} 条，过滤后 {len(filtered_docs)} 条")
         else:
             filtered_docs = base_docs
+
         if not filtered_docs:
-            return "未找到相关知识。"
-        # Step 2: 准备 Rerank 数据格式
-        # FlashRank 需要一个包含 id, text, meta 的字典列表
+            return "本地知识库中有相关记录，但与请求的城市不匹配。"
+
+        # 5. Rerank 流程
         passages = [
             {
                 "id": i,
@@ -89,19 +99,30 @@ async def search_knowledge_base(query: str) -> str:
         ]
 
         rerank_request = RerankRequest(query=query, passages=passages)
+        # 使用 to_thread 跑同步的 ranker
         results = await asyncio.to_thread(ranker.rerank, rerank_request)
-        logger.info(f"Rerank 后的最高分文档内容: {results[0]['text'][:50]}...")
+        
+        if not results:
+            return "重排序后未发现高相关内容。"
+
+        logger.info(f"Rerank 成功，最高分: {results[0]['score']:.4f}")
+        
         top_n = 3
         reranked_content = [res["text"] for res in results[:top_n]]
         final_result = "\n\n".join(reranked_content)
+
     except Exception as e:
-        logger.error(f"Rerank 检索失败: {e}")
-        # 降级处理：如果 Rerank 出错，使用基础检索
-        docs = await retriever.ainvoke(query)
-        final_result = "\n\n".join([d.page_content for d in docs])
-     # 存入缓存
-        cache[cache_key] = final_result
-        return final_result
+        logger.error(f"知识库处理链路失败: {e}")
+        # 降级处理：使用基础检索器直接返回
+        try:
+            fallback_docs = await retriever.ainvoke(query)
+            final_result = "\n\n".join([d.page_content for d in fallback_docs])
+        except:
+            return f"检索服务暂时不可用: {str(e)}"
+
+    # 6. 存入缓存并返回
+    cache[cache_key] = final_result
+    return final_result
 @tool
 async def search_online(query:str):
      """当本地知识库无法回答，或者需要查询最新的天气、活动、突发情况时，调用此在线搜索工具。"""
@@ -113,11 +134,11 @@ async def search_online(query:str):
                 formatted = "\n".join([str(r) for r in results])
         else:
                 formatted = str(results)
-                return formatted
+        return formatted
      except Exception as e:
         logger.error(f"在线搜索失败: {e}")
         return f"搜索失败：{e}"
-# tools.py 
+
 
 @tool
 async def book_train_ticket(name: str, id_card: str, destination: str) -> str:

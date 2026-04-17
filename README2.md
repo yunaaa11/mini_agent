@@ -1,29 +1,31 @@
 # Agent with RAG
 
-这是一个**可控的 LLM Agent 小项目**， Agent / RAG 的基本工程要求：
-
-* 非聊天式 LLM 使用（JSON 协议）
-* Tool Calling（天气查询）
-* RAG（向量检索增强）
-* CLI / HTTP 双入口
-* 可 Docker 化部署
+本项目是一个基于 LangGraph 和 FastAPI 构建的生产级智能体框架，集成了混合搜索、多工具调度及全链路监控系统。
 
 ---
+# 🌟 核心特性
+* **双路混合检索 (Hybrid RAG)**：结合 Chroma 向量检索与 BM25 关键词检索，并通过 FlashRank 进行重排序 (Re-ranking)，显著提升长尾知识的召回精度。
+* **多智能体协同**：利用 LangGraph 维护复杂的决策图状态，实现“知识检索-工具调用-逻辑推理”的闭环。
+* **生产级观测系统 (Observability)**：
+    * **分级日志机制**：异步捕获 Agent 决策流、工具执行耗时及 RAG 检索链路。
+    * **自动日志轮转**：内置自动切分与压缩逻辑，确保系统长期运行的稳定性。
+* **可控性增强**：通过自定义 Prompt 模版与参数抽取器 (CityParser)，解决大模型在特定场景下的参数幻觉问题。
 
 ## 一、项目结构
 
 ```text
 agent-demo/
 ├── agent.py            # Agent 核心逻辑（决策 + Tool 调用）
-├── rag.py              # RAG 检索逻辑（Embedding + Top-K）
-├── rag_data.py         # 本地知识库
-├── tools.py            # 工具函数（天气查询）
+├── rag.py              # 混合检索与重排序逻辑
+├── tools.py            # 异步工具集（API 封装与结果缓存）
 ├── llm.py              # LLM API 封装
 ├── main.py             # 终端调试入口（CLI）
-├── app.py              # Flask API 服务入口
+├── app.py              # 流式响应 (SSE) 后端服务
 ├── requirements.txt    # Python 依赖
 ├── Dockerfile          # Docker 构建文件
-└── README.md           # 项目说明
+|── README.md           # 项目说明
+├── logger.py           # 日志模块（标准库封装，支持文件/控制台双输出）
+├── logs/               # [自动生成] 存放运行日志，便于调试和追踪 Agent 决策流
 ```
 
 ---

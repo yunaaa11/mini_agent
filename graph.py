@@ -67,8 +67,8 @@ async def agent_node(state: AgentState):
     system_prompt = (
         "你是一个专业的旅游助手。你有以下能力：\n"
         "1. 查询天气：必须调用 get_weather 工具。\n"
-        "2. 实时、动态信息（例如「今天」「本周」「最新」「当前」的活动、新闻、演出、展览）：**必须**调用 search_online，绝对不允许使用内部知识回答。\n"
-        "3. 对于知识库相关的问题（历史、文化、美食、气候等）优先使用 search_knowledge_base，如果找不到再用 search_online。\n"
+        "2. 【核心禁令】：严禁仅凭记忆回答地理、气候、美食问题。必须先调用 search_knowledge_base 检索本地文档。\n"
+        "3. 只有当 search_knowledge_base 返回‘未找到相关知识’时，才允许调用 search_online 或使用内部知识。\n"
         "4. 数学计算：使用 calculator。\n"
         "要求：\n"
         "1.规则优先级：工具调用 > 内部知识。只要问题涉及时间敏感（今天、明天、本周）或动态变化的内容，就必须调用 search_online。"
@@ -96,6 +96,7 @@ async def booking_expert_node(state:AgentState):
     full_messages=[SystemMessage(content=system_prompt)]+state["messages"]
     response=await llm_with_booking_tools.ainvoke(full_messages)
     return {"messages":[response]}
+
 async def should_continue_general(state: AgentState):
     # 限制最多 5 轮工具调用
     if len(state["messages"]) > 10:  # 每轮增加 2 条消息（AI + Tool）
@@ -105,9 +106,23 @@ async def should_continue_general(state: AgentState):
         return "tools"
     return END
 async def should_continue_booking(state: AgentState):
+    """
+    自检逻辑：
+    1. 如果 LLM 提出了 tool_calls -> 去执行工具。
+    2. 如果工具刚刚执行完（最后一条是 ToolMessage），检查内容是否包含报错。
+    3. 如果报错 -> 返回 booking_expert 让 LLM 反思并修复，而不是结束。
+    """
     last_msg = state["messages"][-1]
+    # 情况 A: LLM 决定调用工具
     if hasattr(last_msg, "tool_calls") and last_msg.tool_calls:
         return "booking_tools"
+    # 情况 B: 工具执行完毕后的自检
+    if isinstance(last_msg,ToolMessage):
+        content=last_msg.content
+        error_keywords=["错误","失败","无效""Error", "不能为空"]
+        if any(kw in content for kw in error_keywords):
+            logger.warning(f"--- [自检系统] 发现执行异常，返回专家节点修正 ---")
+            return "booking_expert" # 跳回专家节点，让 AI 看报错信息并回复用户
     return END
 
 workflow = StateGraph(AgentState)
@@ -132,7 +147,9 @@ workflow.add_conditional_edges("agent", should_continue_general, {"tools": "tool
 workflow.add_edge("tools", "agent")
 # 业务订票链路
 workflow.add_conditional_edges("booking_expert", should_continue_booking, {"booking_tools": "booking_tools", END: END})
-workflow.add_edge("booking_tools", "booking_expert")
+workflow.add_conditional_edges("booking_tools", should_continue_booking,
+    {"booking_expert": "booking_expert", END: END}
+)
 
 # --- 持久化与工厂函数 ---
 _app = None
@@ -160,25 +177,44 @@ async def get_agent_app():
     
 if __name__ == "__main__":
     async def main():
+        # 1. 获取编译好的 app
         app = await get_agent_app()
-        # 核心：这个 ID 决定了记忆的归属
         config = {"configurable": {"thread_id": "user_session_123"}}
         
         print("--- 旅游助理已上线（输入 'exit' 退出） ---")
         
         while True:
-            user_input = input("\n用户: ")
-            if user_input.lower() in ["exit", "quit", "退出"]:
+            # 2. 获取用户输入
+            task = input("\n用户: ")
+            if task.lower() in ["exit", "quit", "退出"]:
                 break
             
-            # 使用 astream 持续监听状态变化
-            inputs = {"messages": [HumanMessage(content=user_input)]}
-            async for event in app.astream(inputs, config=config, stream_mode="values"):
-                # 我们只看最后一项输出（即最新的消息）
-                if "messages" in event:
-                    last_msg = event["messages"][-1]
-                    if isinstance(last_msg, AIMessage):
-                        print(f"助理: {last_msg.content}")
+            # 3. 构造初始状态
+            inputs = {"messages": [HumanMessage(content=task)]}
+            
+            print("助理: ", end="", flush=True)
+
+            # 4. 使用 stream_mode="messages" 进行流式输出
+            # msg 是消息片段，metadata 包含当前节点信息
+            async for msg, metadata in app.astream(inputs, config=config, stream_mode="messages"):
+                node_name = metadata.get("langgraph_node")
+                
+                # 调试用：看看现在运行到哪个节点了
+                # print(f"\n[DEBUG] Node: {node_name}, Type: {type(msg)}") 
+
+                if isinstance(msg, AIMessage):
+                    # 如果有文本内容，直接打印
+                    if msg.content:
+                        print(msg.content, end="", flush=True)
+                    
+                    # 如果没有文本但在调用工具，给个反馈
+                    elif msg.tool_calls:
+                        print(f"\n助理: (正在尝试调用工具: {msg.tool_calls[0]['name']}...)", flush=True)
+                
+                # 如果是工具返回的消息，你也可以选择性打印
+                elif isinstance(msg, ToolMessage):
+                    print("\n助理: (已获取到相关信息，正在整理回答...)", flush=True)
+
     asyncio.run(main())
 # 用户输入: "北京天气"
 #     ↓

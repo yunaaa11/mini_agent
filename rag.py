@@ -4,10 +4,12 @@ from langchain_chroma import Chroma
 from langchain_openai import OpenAIEmbeddings
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_classic.retrievers import EnsembleRetriever
 from config import Config
 import os
 from rag_data import DOCS
 import hashlib
+from logger import default_logger as logger
 
 # 初始化 embeddings
 embeddings = OpenAIEmbeddings(
@@ -46,71 +48,68 @@ def load_documents_from_folder(folder_path:str):
             continue
         #作用：拼接文件的完整路径（例如 ./knowledge_base/北京.txt）
         file_path = os.path.join(folder_path, file)
-
-        if file.endswith(".txt"):#只处理 .txt 文件,计算 MD5 时需要全文内容
-            with open(file_path, 'r', encoding='utf-8') as f:
-                content = f.read()
-            loader = TextLoader(file_path, encoding='utf-8')
-            docs = loader.load()
-        else:  # PDF
-            loader = PyPDFLoader(file_path)
-            pages = loader.load()
-            content = "\n".join([p.page_content for p in pages])
-            #合并为一个 Document（方便 MD5 去重）
-            docs = [Document(page_content=content, metadata={"source": file})]
-        file_md5=get_text_md5(content)
-        if is_md5_processed(file_md5):
-            print(f"文件 {file} 内容未变化，跳过加载")
-            continue
-        #加载文档（可能返回多个Document,入pdf每页一个）
-        for doc in docs:
-            if "source" not in doc.metadata:
-                doc.metadata["source"] = file
-        all_docs.extend(docs)
-        mark_md5_processed(file_md5)
-    #如果加载后没有拿到任何文档（例如文件夹为空，或所有文件都被 MD5 去重跳过了），则直接返回空列表，避免后续切分报错
-    if not all_docs:
-        return []
+        try:
+            if file.endswith(".txt"):
+                loader = TextLoader(file_path, encoding='utf-8')
+            else:  # PDF
+                loader = PyPDFLoader(file_path)
+            all_docs.extend(loader.load())
+        except Exception as e:
+            logger.error(f"加载文件 {file} 失败: {e}")
     #将长文档切分成小段，提高检索精度
     splitter=RecursiveCharacterTextSplitter(
         chunk_size=Config.chunk_size,
         chunk_overlap=Config.chunk_overlap,
         separators=Config.separators
     )
-    #执行切分，返回新的 Document 列表，每个文档的 page_content 是一个小段落。
-    split_docs=splitter.split_documents(all_docs)
-    print(f"加载了 {len(all_docs)} 个原始文档，切分成 {len(split_docs)} 个文本块")
-    return split_docs
+    return splitter.split_documents(all_docs)
+# 定义两个全局变量
+retriever = None
+vectorstore_obj = None # 新增一个全局变量来存 vectorstore
 
-def get_vectorstore():
-    """获取或创建Chroma向量库"""
+def get_hybrid_retriever():
+    global vectorstore_obj # 声明使用全局变量
+    
+    # 1. 初始化向量库
     if os.path.exists(Config.PERSIST_DIR) and os.listdir(Config.PERSIST_DIR):
-        return Chroma(persist_directory=Config.PERSIST_DIR, embedding_function=embeddings)
+        vs = Chroma(persist_directory=Config.PERSIST_DIR, embedding_function=embeddings)
     else:
-        # 首次运行，从文件夹加载并创建向量库
         docs = load_documents_from_folder(Config.KNOWLEDGE_DIR)
-        if not docs:
-            print("警告：没有找到任何 .txt 文档，将创建空向量库")
-            # 创建一个空的 Chroma 库，避免后续调用出错
-            return Chroma(embedding_function=embeddings, persist_directory=Config.PERSIST_DIR)
-        vectorstore=Chroma.from_documents(docs,embeddings,persist_directory=Config.PERSIST_DIR)
-        return vectorstore
-#先有向量库再检索
-vectorstore=get_vectorstore()
-retriever=vectorstore.as_retriever(search_kwargs={"k":3})
+        vs = Chroma.from_documents(docs, embeddings, persist_directory=Config.PERSIST_DIR)
+    
+    vectorstore_obj = vs # 将 vs 赋值给全局变量
+    
+    vector_retriever = vs.as_retriever(search_kwargs={"k": 3})
+    
+    # 2. 初始化 BM25
+    all_docs = load_documents_from_folder(Config.KNOWLEDGE_DIR)
+    if all_docs:
+        bm25_retriever = BM25Retriever.from_documents(all_docs)
+        bm25_retriever.k = 3
+        
+        ensemble_retriever = EnsembleRetriever(
+             retrievers=[bm25_retriever, vector_retriever], # 注意：这里是你上次改对的 retrievers
+             weights=[0.4, 0.6]
+        )
+        return ensemble_retriever
+    else:
+        return vector_retriever
+#全局初始化检索器
+retriever=get_hybrid_retriever()
+vectorstore = vectorstore_obj
 
 def retrieve(query:str,top_k:int=5):
-    """兼容旧接口，返回文档字符串列表"""
-    docs=retriever.invoke(query)
-    return [doc.page_content for doc in docs[:top_k]]
+    """使用混合检索获取文档内容"""
+    try:
+        docs=retriever.invoke(query)
+        return [doc.page_content for doc in docs[:top_k]]
+    except Exception as e:
+        logger.error(f"检索失败:{e}")
+        return []
 
 def add_document_from_text(content:str,filename:str,metadata:dict=None):
     """
-    通过文本内容增量添加文档到向量库（支持 MD5 去重）
-    :param content: 文档的完整文本内容
-    :param filename: 文件名（用于日志和元数据）
-    :param metadata: 额外的元数据（可选）
-    :return: bool 是否成功添加
+   增量添加文档到向量库（重启程序来刷新BM25索引）
     """
     #md5去重检查
     file_md5=get_text_md5(content)
@@ -129,8 +128,8 @@ def add_document_from_text(content:str,filename:str,metadata:dict=None):
         separators=Config.separators
     )
     split_docs=splitter.split_documents([doc])
-    #获取现有向量库(如果持久化目录不存在，会自动创建空库)
-    vs=get_vectorstore() #复用已有向量库或新建
+    #更新向量库
+    vs = Chroma(persist_directory=Config.PERSIST_DIR, embedding_function=embeddings)
     vs.add_documents(split_docs)
     #记录md5
     mark_md5_processed(file_md5)

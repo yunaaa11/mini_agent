@@ -15,11 +15,17 @@ from fastapi import Request
 import time
 import shutil
 from rag import add_document_from_text
+from fastapi.middleware.cors import CORSMiddleware
 app=FastAPI()
 class TaskRequest(BaseModel):
     task:str
     session_id: str = "default"
 
+app.add_middleware(    
+    CORSMiddleware,    
+    allow_origins=["*"],  # 开发环境可暂时用 *，生产环境指定具体前端地址   
+    allow_methods=["*"],    
+    allow_headers=["*"],)
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     start = time.time()
