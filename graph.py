@@ -1,3 +1,4 @@
+import datetime
 import os
 import sqlite3
 from langgraph.graph import StateGraph, END
@@ -19,6 +20,7 @@ class AgentState(TypedDict):
     messages: Annotated[List[BaseMessage], operator.add]
     city: Optional[str]
     retrieved_docs: Optional[str]
+    rewrite_query: Optional[str]
 
 llm = get_llm()
 # 通用 Agent 工具集
@@ -64,40 +66,58 @@ def direct_reply_node(state: AgentState):
     return {"messages": [AIMessage(content=content)]}
 # 通用 Agent 节点 (负责 RAG 和 外部搜索)
 async def agent_node(state: AgentState):
-    # 1. 新增：查询重写 (Query Rewrite)
-    # 利用上下文将“那边有什么好吃的”改写为“西安有哪些推荐美食”
-    rewrite_llm = get_llm(temperature=0)
-    last_user_msg = state["messages"][-1].content
+    last_message = state["messages"][-1]
+    # 核心修正：如果最后一条消息是工具返回的结果(ToolMessage)或反思结果(AIMessage且包含【事实核查】)
+    # 则【跳过】重写逻辑，直接让 LLM 总结回答
+    is_tool_result = isinstance(last_message, ToolMessage) or (
+        isinstance(last_message, AIMessage) and "【事实核查】" in last_message.content
+    )
+
+    if is_tool_result:
+        search_query = state.get("rewrite_query", "总结检索结果")
+        logger.info(f"--- 识别到工具结果，跳过重写，直接总结 ---")
+    else:
+        # 只有在处理用户新提问时才重写
+        rewrite_llm = get_llm(temperature=0)
+        current_date = datetime.datetime.now().strftime("%Y-%m-%d")
+        
+        rewrite_prompt = f"""当前日期是: {current_date}。
+        根据对话历史，将用户的最新问题改写为一个完整、具体的搜索词。
+        历史记录: {state["messages"][-3:]} 
+        最新问题: {last_message.content}
+        改写后的搜索词:"""
     
-    rewrite_prompt = f"""根据对话历史，将用户的最新问题改写为一个完整、具体的搜索词。
-    历史记录: {state["messages"][-3:]} 
-    最新问题: {last_user_msg}
-    改写后的搜索词:"""
-    
-    rewrite_res = await rewrite_llm.ainvoke([HumanMessage(content=rewrite_prompt)])
-    search_query = rewrite_res.content.strip()
-    logger.info(f"--- 查询重写: {last_user_msg} -> {search_query} ---")
+        rewrite_res = await rewrite_llm.ainvoke([HumanMessage(content=rewrite_prompt)])
+        search_query = rewrite_res.content.strip()
+        logger.info(f"--- 查询重写: {last_message.content} -> {search_query} ---")
     
     # 构建系统提示，告诉 LLM 有哪些工具
     system_prompt = (
-        "你是一个专业的旅游助手。你有以下能力：\n"
-        "1. 查询天气：必须调用 get_weather 工具。\n"
-        "2. 【核心禁令】：严禁仅凭记忆回答地理、气候、美食问题。必须先调用 search_knowledge_base 检索本地文档。\n"
-        "3. 只有当 search_knowledge_base 返回‘未找到相关知识’时，才允许调用 search_online 或使用内部知识。\n"
-        "4. 数学计算：使用 calculator。\n"
-        "要求：\n"
-        "1.规则优先级：工具调用 > 内部知识。只要问题涉及时间敏感（今天、明天、本周）或动态变化的内容，就必须调用 search_online。"
-        "2. 不要盲目追求‘最新’而忽略本地 PDF 文档中的具体规则。"
-        "3. 严禁说‘感谢提供信息’、‘我可以为您提供以下帮助’等废话。\n"
-        "4.如果用户提到订票相关的后续补充信息，请指引用户继续完成流程，不要说你没有订票权限。"
-        "5. 直接给出建议或答案，条理清晰。\n"
-    )
-
+    f"今天是 {datetime.datetime.now().strftime('%Y-%m-%d')}。\n"
+    "你是一个极其严谨的专家级旅游助手。在回答之前，你必须执行以下逻辑与验证机制：\n\n"
+    "1. 【强力 Grounding 与事实溯源】：\n"
+    "   - **禁止输出任何本地文档中未提及的数字、年份或具体细节。** 即使你拥有外部知识，如果文档没写，你就必须视而不见。\n"
+    "   - 严禁仅凭记忆回答。气候规律、地道美食和文化背景必须调用 search_knowledge_base。\n"
+    "   - **规则优先级**：本地 PDF 文档中的建议 > 搜索引擎信息 > 你的内部预训练知识。\n\n"
+    "2. 【天气与时效信息验证】：\n"
+    "   - **实时天气**：必须调用 get_weather 获取温度和基础状况。\n"
+    "   - **风险验证**：必须配合 search_online 验证今日是否有突发气象预警、自然灾害或景区闭园等动态信息，严禁仅靠本地文档回答“今天”的情况。\n\n"
+    "3. 【约束过度服务与反问机制】：\n"
+    "   - 如果用户问题指代不明（例如只问“天气”或“攻略”），且检索内容涉及多个城市，**必须反问用户是指哪个城市**，严禁盲目猜测或一次性列出所有城市。\n"
+    "   - 只有当信息全备且指向明确时，才给出最终建议。\n\n"
+    "4. 【降级补偿机制】：\n"
+    "   - 若 get_weather 失败或 search_knowledge_base 无结果，必须立即启动 search_online 补全信息，绝对禁止回答“不知道”或“查不到”。\n"
+    "   - 只有当 API 数据、本地文档和在线搜索结果相互验证后，才给出最终建议。\n\n"
+    "5. 【交互规范】：\n"
+    "   - **拒绝推诿**：你拥有订票、查询、全权处理建议的能力，严禁说“我没有权限”或“建议您去12306”。\n"
+    "   - **拒绝废话**：严禁说“我可以为您提供帮助”、“感谢提供信息”。\n"
+    "   - **输出要求**：直接给出结构化答案。条理清晰地区分：『实时天气』、『穿衣/气候建议』与『旅游专家提醒』。\n\n"
+    f"当前处理意图：{search_query}"
+)
     full_messages = [SystemMessage(content=system_prompt)] + state["messages"]
-    
     # 让 LLM 决定是直接回答还是调用工具
     response = await llm_with_general_tools.ainvoke(full_messages)
-    return {"messages": [response]}
+    return {"messages": [response], "rewrite_query": search_query}
 
 # 订票专家节点 (负责引导用户补全身份信息)
 async def booking_expert_node(state:AgentState):
@@ -120,6 +140,7 @@ async def should_continue_general(state: AgentState):
     if hasattr(last_msg, "tool_calls") and last_msg.tool_calls:
         return "tools"
     return END
+
 async def should_continue_booking(state: AgentState):
     """
     自检逻辑：
@@ -140,12 +161,44 @@ async def should_continue_booking(state: AgentState):
             return "booking_expert" # 跳回专家节点，让 AI 看报错信息并回复用户
     return END
 
+async def reflection_node(state:AgentState):
+    last_msg=state["messages"][-1]
+    #只有上一条工具返回内容才反思，否则跳过
+    if not isinstance(last_msg,ToolMessage):
+        return state
+    # 优化：只有知识库检索到的内容才需要反思核对，天气等动态数据直接跳过
+    if last_msg.name != "search_knowledge_base":
+        return state
+        
+    logger.info("--- 针对知识库内容进行深度核对 ---")
+    logger.info("--- 进入反思节点：核对检索事实 ---")
+    checker_llm = get_llm(temperature=0)
+    check_prompt =f"""
+    ### 核心指令 (CRITICAL INSTRUCTION) ###
+    1. 你现在是一个完全没有外部记忆、没有常识、没有个人偏好的纯粹事实核查机器人。
+    2. 你的整个世界、所有的真相，仅限于下方提供的【原始检索内容】。
+    3. 严禁利用你预训练学到的知识来修正文档。即使文档说“地球是方的”，你也必须认为地球是方的。
+    
+    【逻辑优先规则】：
+    - 寻找关键词：'实际'、'但实际上'、'其实'。
+    - **必须采信转折后的陈述**。例如文档说“传闻周一闭馆，但实际上全年无休”，你必须输出“全年无休”。
+
+    【原始检索内容】: 
+    {last_msg.content}
+
+    请直接输出核心事实陈述，严禁废话："""
+    response=await checker_llm.ainvoke([HumanMessage(content=check_prompt)])
+    # 将校对后的事实作为一条 AI 的辅助记忆插入
+    reflection_msg = AIMessage(content=f"【事实核查】：{response.content}")
+    return {"messages": [reflection_msg]}
+
 workflow = StateGraph(AgentState)
 workflow.add_node("direct_reply",direct_reply_node)
 workflow.add_node("agent", agent_node)
 workflow.add_node("tools", general_tools_node)
 workflow.add_node("booking_expert", booking_expert_node)
 workflow.add_node("booking_tools",booking_tools_node)
+workflow.add_node("reflection", reflection_node)
 # 设置意图入口
 workflow.set_conditional_entry_point(
     router,
@@ -157,9 +210,10 @@ workflow.set_conditional_entry_point(
 )
 #定义边
 workflow.add_edge("direct_reply",END)
-# 通用 RAG 链路
+# 通用链路：agent -> should_continue_general -> tools -> reflection -> agent
 workflow.add_conditional_edges("agent", should_continue_general, {"tools": "tools", END: END})
-workflow.add_edge("tools", "agent")
+workflow.add_edge("tools", "reflection")
+workflow.add_edge("reflection", "agent")
 # 业务订票链路
 workflow.add_conditional_edges("booking_expert", should_continue_booking, {"booking_tools": "booking_tools", END: END})
 workflow.add_conditional_edges("booking_tools", should_continue_booking,
@@ -194,6 +248,15 @@ if __name__ == "__main__":
     async def main():
         # 1. 获取编译好的 app
         app = await get_agent_app()
+        try:
+            # 尝试生成 Mermaid 图片
+            graph_png = app.get_graph().draw_mermaid_png()
+            with open("langgraph_v2.png", "wb") as f:
+                f.write(graph_png)
+            print("--- 流程图已生成至: langgraph_v2.png ---")
+        except Exception as e:
+            print(f"--- 流程图生成失败（可能是缺少 pygraphviz）: {e} ---")
+
         config = {"configurable": {"thread_id": "user_session_123"}}
         
         print("--- 旅游助理已上线（输入 'exit' 退出） ---")
@@ -231,23 +294,3 @@ if __name__ == "__main__":
                     print("\n助理: (已获取到相关信息，正在整理回答...)", flush=True)
 
     asyncio.run(main())
-# 用户输入: "北京天气"
-#     ↓
-# agent_node（第一次）
-#     ├─ LLM 看到系统提示"必须调用工具"
-#     ├─ 输出 AIMessage 带 tool_calls: [{"name":"get_weather","args":{"city":"北京"},"id":"123"}]
-#     └─ 状态更新: messages += [AIMessage]
-#     ↓
-# 条件边 should_continue → 检测到 tool_calls → 跳转到 "tools" 节点
-#     ↓
-# call_tools_node
-#     ├─ 执行 get_weather("北京") → "晴天,5°C"
-#     ├─ 创建 ToolMessage(content="晴天,5°C", tool_call_id="123")
-#     └─ 状态更新: messages += [ToolMessage]
-#     ↓
-# agent_node（第二次）
-#     ├─ LLM 看到历史: HumanMessage("北京天气") + AIMessage(请求工具) + ToolMessage(结果)
-#     ├─ LLM 不再请求工具，直接生成最终回答: "北京天气晴天，温度5°C"
-#     └─ 状态更新: messages += [AIMessage(content="...")]
-#     ↓
-# 条件边 should_continue → 无 tool_calls → END

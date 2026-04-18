@@ -18,27 +18,16 @@ async def run_agent(task:str, session_id: str = "default")-> AsyncGenerator[str,
     # 使用 v2 版本的 stream_events 监听模型生成的 token
     async for event in app.astream_events(input_data,config,version="v2"):
         kind=event["event"]
-        # # 1. 抓取思考链（如果模型支持）
-        if kind=="on_chat_model_stream":
+        # 只处理 chat_model 的流输出，不要处理任何 chain 或 tool 的事件
+        if kind == "on_chat_model_stream":
             chunk = event["data"]["chunk"]
-            # 1. 提取思考内容 (针对 DeepSeek 等模型)
-            reasoning = chunk.additional_kwargs.get("reasoning_content")
-            if reasoning:
-                if last_type != "thought":
-                    yield "[THOUGHT_START]" # 发送开始标记
-                    last_type = "thought"
-                yield reasoning
-            # 2. 抓取最终回复
-            content = event["data"]["chunk"].content
-            if content:
-                if last_type == "thought":
-                    yield "[THOUGHT_END]" # 思考结束
-                    last_type = "content"
-                elif last_type is None:
-                    # 第一次输出内容，且没有经历 thought 阶段
-                    last_type = "content"
-                
-                yield content
+            
+            # 过滤掉所有思考过程，只取 content
+            if hasattr(chunk, 'content') and chunk.content:
+                # 过滤掉那些长得像日志的废话
+                if "事实核查结论" in chunk.content or "ping -" in chunk.content:
+                    continue
+                yield chunk.content
 
     # 善后：如果流程结束了 last_type 还是 thought，强制关闭它
     if last_type == "thought":

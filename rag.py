@@ -7,15 +7,9 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_classic.retrievers import EnsembleRetriever
 from config import Config
 import os
-from rag_data import DOCS
 import hashlib
 from logger import default_logger as logger
 from langchain_core.documents import Document
-    # 尝试 1.x 版本的统一调用接口
-from magic_pdf.data.data_reader_writer import FileBasedDataWriter, FileBasedDataReader
-    # 注意：新版本中 UNIPipe 可能被整合，我们通过以下方式获取解析器
-from magic_pdf.model.doc_analyze_by_custom_model import ModelSingleton
-HAS_MINERU = True
 # 初始化 embeddings
 embeddings = OpenAIEmbeddings(
     api_key=Config.OPENAI_API_KEY,
@@ -24,7 +18,6 @@ embeddings = OpenAIEmbeddings(
     check_embedding_ctx_length=False,
 )
 #md5去重模块
-
 def get_text_md5(text: str) -> str:
     return hashlib.md5(text.encode('utf-8')).hexdigest()
 #防止重复添加内容完全相同的文件

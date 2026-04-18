@@ -4,7 +4,7 @@ from config import Config
 from logger import default_logger as logger
 Config.validate()#启动时快速失败，提示你补充 .env 中的配置。
 
-def get_llm(timeout=None):
+def get_llm(timeout=None, temperature=None):
     """返回 LangChain 的 ChatOpenAI 实例"""
     return ChatOpenAI(
         api_key=Config.OPENAI_API_KEY,

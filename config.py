@@ -1,8 +1,8 @@
 # config.py
 import os
 from dotenv import load_dotenv
-
-load_dotenv()  # 读取 .env 文件 一定要在你需要读取环境变量之前执行，否则 os.getenv 得不到值。
+load_dotenv()
+# load_dotenv()  # 读取 .env 文件 一定要在你需要读取环境变量之前执行，否则 os.getenv 得不到值。
 
 class Config:
     # ===== LLM 配置 =====
@@ -21,7 +21,7 @@ class Config:
     separators=os.getenv("separators")
     TAVILY_API_KEY =os.getenv("TAVILY_API_KEY")
     MD5_RECORD_FILE = os.getenv('MD5_RECORD_FILE', './processed_md5.txt')
-
+    AMAP_KEY=os.getenv("AMAP_KEY")
 
     # ===== 功能开关 =====
     ENABLE_RAG = os.getenv("ENABLE_RAG", "true").lower() == "true"

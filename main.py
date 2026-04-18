@@ -13,14 +13,11 @@ async def main():
         if task.lower() in ["exit", "quit"]: break
         print("助理: ", end="", flush=True)
         async for chunk in run_agent(task, session_id):
-            # 过滤标记，或者根据标记改变打印颜色
-            if chunk == "[THOUGHT_START]":
-                print("\n思考中...", end="", flush=True)
-            elif chunk == "[THOUGHT_END]":
-                print("\n结论：", end="", flush=True)
-            else:
-                print(chunk, end="", flush=True)
-        print() # 换行
+    # 如果 chunk 里包含特定的系统标记，直接跳过
+           if "event:" in chunk or "data:" in chunk:
+              continue
+           print(chunk, end="", flush=True)
+        print()
 
 if __name__ == "__main__":
     asyncio.run(main())

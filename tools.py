@@ -10,10 +10,12 @@ from langchain_tavily import TavilySearch
 from asteval import Interpreter
 from cachetools import TTLCache
 import hashlib
+import httpx
 aeval = Interpreter()
 ranker = Ranker(model_name="ms-marco-TinyBERT-L-2-v2")
 vector_retriever = vectorstore.as_retriever(search_kwargs={"k": 10})
 cache = TTLCache(maxsize=100, ttl=300)
+
 def get_cache_key(prefix: str, *args) -> str:
     """生成缓存键，例如 'weather:北京' -> MD5 或直接字符串"""
     raw = f"{prefix}:{':'.join(str(a) for a in args)}"
@@ -29,18 +31,36 @@ async def get_weather(city:str) -> str:
     if cache_key in cache:
         logger.info(f"天气缓存命中: {city}")
         return cache[cache_key]
-    
-    await asyncio.sleep(1)
-    fake_weather={
-        "北京":"晴天,5°C",
-        "上海":"多云,8°C",
-        "广州": "小雨, 15°C"
-    }
-    result=fake_weather.get(city, "暂无该城市天气数据")
+    try:
+        async with httpx.AsyncClient() as client:
+            # 先根据城市名获取 adcode（高德要求传行政区划代码）
+            geo_url = f"https://restapi.amap.com/v3/geocode/geo?address={city}&key={Config.AMAP_KEY}"
+            geo_res = await client.get(geo_url)
+            geo_data = geo_res.json()
+            
+            if geo_data['status'] == '1' and geo_data['geocodes']:
+                adcode = geo_data['geocodes'][0]['adcode']
+                
+                # 获取实时天气
+                weather_url = f"https://restapi.amap.com/v3/weather/weatherInfo?city={adcode}&key={Config.AMAP_KEY}"
+                w_res = await client.get(weather_url)
+                w_data = w_res.json()
+                
+                if w_data['status'] == '1' and w_data['lives']:
+                    live = w_data['lives'][0]
+                    result = f"{live['city']}当前天气：{live['weather']}，气温{live['temperature']}℃，风向{live['winddirection']}风，湿度{live['humidity']}%。"
+                else:
+                    result = f"无法获取{city}的具体天气数值。"
+            else:
+                result = f"未识别的城市名: {city}"
+                
+    except Exception as e:
+        logger.error(f"天气 API 调用失败: {type(e).__name__} - {str(e)}")
+        result = "天气接口暂时不可用，请稍后再试。"
+
     # 3. 存入缓存
     cache[cache_key] = result
     return result
-
 @tool
 async def calculator(expression:str)->str:
     """计算数学表达式，例如'2+3*4'"""
